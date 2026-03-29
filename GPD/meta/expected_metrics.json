@@ -1,0 +1,26 @@
+{
+  "video_best_snapshot": {
+    "source_summary": "/mnt/**/summary.json",
+    "overall_top1": 0.3230769230769231,
+    "overall_top2": 0.4,
+    "overall_top3": 0.5,
+    "overall_bin_acc": 0.6938461538461539,
+    "overall_bin_f1": 0.17427385892116182,
+    "overall_bin_auc": 0.5354717291255753,
+    "mean_fold_top1": 0.323005698005698,
+    "mean_fold_top2": 0.4005698005698006,
+    "mean_fold_top3": 0.49886039886039885
+  },
+  "audio_best_snapshot": {
+    "source_summary": "/mnt/**/summary.json",
+    "overall_top1": 0.35384615384615387,
+    "overall_top2": 0.43846153846153846,
+    "overall_top3": 0.5153846153846153,
+    "overall_bin_acc": 0.698076923076923,
+    "overall_bin_f1": 0.20626895854398383,
+    "overall_bin_auc": 0.5929930966469428,
+    "mean_fold_top1": 0.35327635327635326,
+    "mean_fold_top2": 0.4383823361823362,
+    "mean_fold_top3": 0.5145299145299145
+  }
+}
