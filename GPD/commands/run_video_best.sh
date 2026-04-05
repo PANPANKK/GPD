@@ -6,13 +6,20 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 TRAIN_SCRIPT="$ROOT_DIR/code/train_video_genlie_q2d_progressive_kd_5fold.py"
 
 OUT_ROOT="${1:-$ROOT_DIR/results}"
-OUT_DIR="${OUT_DIR:-$OUT_ROOT/video_best}"
+OUT_DIR="${OUT_DIR:-$OUT_ROOT/video_run}"
 mkdir -p "$OUT_DIR"
 
-DATA_ROOT="${VIDEO_DATA_ROOT:-/mnt/**/data}"
-SPLIT_ROOT="${VIDEO_SPLIT_ROOT:-/mnt/**/repro_gap_adaptive_20260319/data_split/5fold}"
-TEACHER_REPO_ROOT="${VIDEO_TEACHER_REPO_ROOT:-/mnt/**/repro_gap_adaptive_20260319/gsr_time2graphplus}"
-TEACHER_CKPT_ROOT="${VIDEO_TEACHER_CKPT_ROOT:-/mnt/**/repro_gap_adaptive_20260319/results/kd_staged/xkd_exp01/stage1_teacher}"
+DATA_ROOT="${VIDEO_DATA_ROOT:-}"
+SPLIT_ROOT="${VIDEO_SPLIT_ROOT:-}"
+TEACHER_REPO_ROOT="${VIDEO_TEACHER_REPO_ROOT:-}"
+TEACHER_CKPT_ROOT="${VIDEO_TEACHER_CKPT_ROOT:-}"
+VAL_RATIO="${VAL_RATIO:-0.2}"
+SELECT_ON="${SELECT_ON:-val}"
+
+if [[ -z "$DATA_ROOT" || -z "$SPLIT_ROOT" || -z "$TEACHER_REPO_ROOT" || -z "$TEACHER_CKPT_ROOT" ]]; then
+  echo "[ERROR] Please set VIDEO_DATA_ROOT, VIDEO_SPLIT_ROOT, VIDEO_TEACHER_REPO_ROOT, VIDEO_TEACHER_CKPT_ROOT"
+  exit 1
+fi
 
 "$PYTHON_BIN" "$TRAIN_SCRIPT" \
   --data_root "$DATA_ROOT" \
@@ -25,15 +32,17 @@ TEACHER_CKPT_ROOT="${VIDEO_TEACHER_CKPT_ROOT:-/mnt/**/repro_gap_adaptive_2026031
   --teacher_type time2graph \
   --teacher_infer_batch_size 256 \
   --teacher_num_workers 8 \
-  --reuse_teacher_score_cache 1 \
+  --reuse_teacher_score_cache 0 \
   --reuse_teacher_feat_cache 1 \
+  --save_teacher_score_cache_csv 0 \
+  --anonymize_subject_id 1 \
   --batch_size 16 --epochs 120 --lr 1e-4 --weight_decay 1e-4 \
   --seed 42 --fp16 0 \
   --hidden_dim 512 --re_embed_dim 256 --dropout_rate 0.3 \
   --student_mode per_q --triplet_margin 1.0 --id_loss_weight 0.0 --triplet_loss_weight 0.0 --id_loss_lambda 1.0 \
   --input_dim_cap 4096 --feature_qid_shift 0 --min_valid_q 20 \
-  --val_ratio 0.0 --select_on test \
-  --agg_modes sum,mean,max,logsumexp --kd_digit_agg_mode sum \
+  --val_ratio "$VAL_RATIO" --select_on "$SELECT_ON" \
+  --kd_digit_agg_mode sum \
   --lambda_lie_ce 1.0 --lambda_digit_ce 0.3 --lambda_rank_kd 0.0 --lambda_digit_kd 0.7 --lambda_feat_align 0.2 \
   --temp_rank 2.0 --temp_digit 2.0 \
   --stage1_epochs 8 --stage2_epochs 12 --stage3_digit_ramp_epochs 10 \

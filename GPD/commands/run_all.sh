@@ -8,5 +8,5 @@ bash "$ROOT_DIR/commands/run_video_best.sh" "$OUT_ROOT"
 bash "$ROOT_DIR/commands/run_audio_best.sh" "$OUT_ROOT"
 
 echo "[DONE] all runs finished."
-echo "video summary: $OUT_ROOT/video_best/summary.json"
-echo "audio summary: $OUT_ROOT/audio_best/summary.json"
+echo "video summary: $OUT_ROOT/video_run/summary.json"
+echo "audio summary: $OUT_ROOT/audio_run/summary.json"
