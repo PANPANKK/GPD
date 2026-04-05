@@ -980,25 +980,14 @@ def aggregate_digit_scores_torch(scores20: torch.Tensor, qdigits20: torch.Tensor
     returns [B,10]
     """
     mode_l = str(mode).lower().strip()
+    if mode_l != "sum":
+        raise ValueError(f"Only 'sum' aggregation is supported in this release, got: {mode}")
     bsz = int(scores20.shape[0])
     out = torch.zeros((bsz, 10), dtype=scores20.dtype, device=scores20.device)
-    neg = torch.full_like(scores20, -1e6)
 
     for d in range(1, 11):
         m = (qdigits20 == int(d)).to(scores20.dtype)  # [B,20]
-        if mode_l == "sum":
-            out[:, d - 1] = (scores20 * m).sum(dim=1)
-        elif mode_l == "mean":
-            den = m.sum(dim=1).clamp(min=1.0)
-            out[:, d - 1] = (scores20 * m).sum(dim=1) / den
-        elif mode_l == "max":
-            masked = torch.where(m > 0, scores20, neg)
-            out[:, d - 1] = masked.max(dim=1).values
-        elif mode_l in ("logsumexp", "lse"):
-            masked = torch.where(m > 0, scores20, neg)
-            out[:, d - 1] = torch.logsumexp(masked, dim=1)
-        else:
-            raise ValueError(f"Unknown agg_mode: {mode}")
+        out[:, d - 1] = (scores20 * m).sum(dim=1)
     return out
 
 
@@ -1363,6 +1352,7 @@ def load_teacher_outputs_fold(
     cache_npz: Optional[Path],
     reuse_score_cache: bool = True,
     reuse_feat_cache: bool = True,
+    save_score_cache_csv: bool = False,
 ) -> Tuple[Dict[str, Dict[int, float]], Dict[str, Dict[int, np.ndarray]], int]:
     """
     Return:
@@ -1502,7 +1492,7 @@ def load_teacher_outputs_fold(
             if i < feat_all.shape[0]:
                 out_f.setdefault(sid, {})[qid] = feat_all[i].astype(np.float32)
 
-    if cache_csv is not None:
+    if save_score_cache_csv and cache_csv is not None:
         cache_csv.parent.mkdir(parents=True, exist_ok=True)
         with cache_csv.open("w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
@@ -1684,6 +1674,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--teacher_num_workers", type=int, default=4)
     ap.add_argument("--reuse_teacher_score_cache", type=int, default=1, choices=[0, 1])
     ap.add_argument("--reuse_teacher_feat_cache", type=int, default=1, choices=[0, 1])
+    ap.add_argument("--save_teacher_score_cache_csv", type=int, default=0, choices=[0, 1])
 
     ap.add_argument("--batch_size", type=int, default=16, help="subject batch size")
     ap.add_argument("--epochs", type=int, default=80)
@@ -1704,10 +1695,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--input_dim_cap", type=int, default=4096)
     ap.add_argument("--feature_qid_shift", type=int, default=0)
     ap.add_argument("--min_valid_q", type=int, default=20)
+    ap.add_argument("--anonymize_subject_id", type=int, default=1, choices=[0, 1])
     ap.add_argument("--val_ratio", type=float, default=0.2)
     ap.add_argument("--select_on", type=str, default="val", choices=["val", "test"])
-    ap.add_argument("--agg_modes", type=str, default="sum,mean,max,logsumexp")
-    ap.add_argument("--kd_digit_agg_mode", type=str, default="sum", choices=["sum", "mean", "max", "logsumexp"])
+    ap.add_argument("--kd_digit_agg_mode", type=str, default="sum", choices=["sum"])
 
     # Hard losses
     ap.add_argument("--lambda_lie_ce", type=float, default=1.0)
@@ -1812,13 +1803,10 @@ def main() -> None:
 
     seed_everything(int(cfg.seed))
     device = get_device(str(cfg.device))
-    agg_modes = _parse_csv_list(str(cfg.agg_modes))
-    if len(agg_modes) == 0:
-        agg_modes = ["sum"]
     logging.info("device=%s", device)
-    logging.info("student_modality=%s data_root=%s", student_modality, cfg.data_root)
-    logging.info("teacher_ckpt_root=%s", cfg.teacher_ckpt_root)
-    logging.info("teacher_type=%s teacher_repo_root=%s", str(cfg.teacher_type), str(cfg.teacher_repo_root))
+    logging.info("student_modality=%s", student_modality)
+    logging.info("teacher_type=%s", str(cfg.teacher_type))
+    logging.info("input paths configured via CLI/env")
     logging.info("workflow: Q2D progressive KD (question->digit)")
     logging.info("student_mode=%s", str(cfg.student_mode))
     logging.info("model selection on: %s", str(cfg.select_on))
@@ -1907,7 +1895,7 @@ def main() -> None:
         str(cfg.logitstd_mode),
         float(cfg.logitstd_eps),
     )
-    logging.info("selection agg candidates=%s", agg_modes)
+    logging.info("selection agg mode=sum")
 
     split_root = Path(cfg.split_root)
     all_ids: List[str] = []
@@ -1964,7 +1952,7 @@ def main() -> None:
                 continue
             logging.info("fold %d split: train=%d val=%d test=%d", fold, len(tr_ids), len(va_ids), len(te_ids))
 
-        score_cache_csv = out_dir / f"teacher_scores_fold{fold}.csv"
+        score_cache_csv = (out_dir / f"teacher_scores_fold{fold}.csv") if bool(int(cfg.save_teacher_score_cache_csv)) else None
         feat_cache_npz = out_dir / f"teacher_feats_fold{fold}.npz"
         teacher_scores, teacher_feats, teacher_feat_dim = load_teacher_outputs_fold(
             fold=fold,
@@ -1982,6 +1970,7 @@ def main() -> None:
             cache_npz=feat_cache_npz,
             reuse_score_cache=bool(int(cfg.reuse_teacher_score_cache)),
             reuse_feat_cache=bool(int(cfg.reuse_teacher_feat_cache)),
+            save_score_cache_csv=bool(int(cfg.save_teacher_score_cache_csv)),
         )
 
         use_feat_align_fold = bool(float(cfg.lambda_feat_align) > 0.0 and int(teacher_feat_dim) > 0)
@@ -2155,7 +2144,7 @@ def main() -> None:
         best_val: Optional[Dict[str, float]] = None
         best_state: Optional[Dict[str, Dict[str, torch.Tensor]]] = None
         best_epoch = 0
-        best_agg = str(agg_modes[0])
+        best_agg = "sum"
 
         for ep in range(1, int(cfg.epochs) + 1):
             model.train()
@@ -2448,25 +2437,20 @@ def main() -> None:
 
             sel_loader = va_ld if str(cfg.select_on).lower().strip() == "val" else te_ld
             sel_name = "val" if str(cfg.select_on).lower().strip() == "val" else "test"
-            best_this_epoch: Optional[Dict[str, float]] = None
-            for agg_mode in agg_modes:
-                met_sel, _, _ = evaluate_student(
-                    model,
-                    sel_loader,
-                    device,
-                    agg_mode=str(agg_mode),
-                    student_mode=str(cfg.student_mode),
-                )
-                if better_by_topk(met_sel, best_this_epoch):
-                    best_this_epoch = dict(met_sel)
-            assert best_this_epoch is not None
+            met_sel, _, _ = evaluate_student(
+                model,
+                sel_loader,
+                device,
+                agg_mode="sum",
+                student_mode=str(cfg.student_mode),
+            )
             cur = {
                 "epoch": float(ep),
                 "train_loss": float(train_loss),
-                "top1": float(best_this_epoch["top1"]),
-                "top2": float(best_this_epoch["top2"]),
-                "top3": float(best_this_epoch["top3"]),
-                "agg_mode": str(best_this_epoch["agg_mode"]),
+                "top1": float(met_sel["top1"]),
+                "top2": float(met_sel["top2"]),
+                "top3": float(met_sel["top3"]),
+                "agg_mode": "sum",
                 "in_dim": float(in_dim),
             }
             if use_nofeat_route_fold and nofeat_route_state is not None:
@@ -2667,12 +2651,6 @@ def main() -> None:
     if len(fold_rows) == 0:
         raise RuntimeError("No fold completed")
 
-    mean_top1 = float(np.mean([float(r["top1"]) for r in fold_rows]))
-    mean_top2 = float(np.mean([float(r["top2"]) for r in fold_rows]))
-    mean_top3 = float(np.mean([float(r["top3"]) for r in fold_rows]))
-    mean_bin_acc = float(np.mean([float(r["bin_acc"]) for r in fold_rows]))
-    mean_bin_f1 = float(np.mean([float(r["bin_f1"]) for r in fold_rows]))
-    mean_bin_auc = float(np.mean([float(r["bin_auc"]) for r in fold_rows]))
     overall_top1 = float(total_h1) / max(1, int(total_n))
     overall_top2 = float(total_h2) / max(1, int(total_n))
     overall_top3 = float(total_h3) / max(1, int(total_n))
@@ -2681,14 +2659,6 @@ def main() -> None:
         y_prob=[float(r["y_prob"]) for r in detail_q_rows],
         threshold=0.5,
     )
-    top1_stats = summarize_mean_std([float(r["top1"]) for r in fold_rows])
-    top2_stats = summarize_mean_std([float(r["top2"]) for r in fold_rows])
-    top3_stats = summarize_mean_std([float(r["top3"]) for r in fold_rows])
-    acc_stats = summarize_mean_std([float(r["bin_acc"]) for r in fold_rows])
-    f1_stats = summarize_mean_std([float(r["bin_f1"]) for r in fold_rows])
-    auc_stats = summarize_mean_std([float(r["bin_auc"]) for r in fold_rows])
-    params_stats = summarize_mean_std([float(r["params_k"]) for r in complexity_rows])
-    flops_stats = summarize_mean_std([float(r["flops_per_sample"]) for r in complexity_rows])
 
     with (out_dir / "fold_metrics.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(
@@ -2724,16 +2694,25 @@ def main() -> None:
         for r in fold_rows:
             w.writerow(r)
 
+    if bool(int(getattr(cfg, "anonymize_subject_id", 1))):
+        sid_set = sorted(set([str(r["subject_id"]) for r in detail_rows] + [str(r["subject_id"]) for r in detail_q_rows]))
+        sid_map = {sid: f"S{idx + 1:03d}" for idx, sid in enumerate(sid_set)}
+        detail_rows_public = [{**r, "subject_id": sid_map.get(str(r["subject_id"]), str(r["subject_id"]))} for r in detail_rows]
+        detail_q_rows_public = [{**r, "subject_id": sid_map.get(str(r["subject_id"]), str(r["subject_id"]))} for r in detail_q_rows]
+    else:
+        detail_rows_public = detail_rows
+        detail_q_rows_public = detail_q_rows
+
     with (out_dir / "detail_predictions.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["fold", "subject_id", "y_true", "y_hat", "top3", "agg_mode"])
         w.writeheader()
-        for r in detail_rows:
+        for r in detail_rows_public:
             w.writerow(r)
 
     with (out_dir / "detail_question_binary.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["fold", "subject_id", "qid", "q_digit", "y_true", "y_prob", "y_pred"])
         w.writeheader()
-        for r in detail_q_rows:
+        for r in detail_q_rows_public:
             w.writerow(r)
 
     with (out_dir / "model_complexity.csv").open("w", newline="", encoding="utf-8") as f:
@@ -2745,47 +2724,38 @@ def main() -> None:
     with (out_dir / "model_complexity.json").open("w", encoding="utf-8") as f:
         json.dump(
             {
-                "params_k_mean": float(params_stats["mean"]),
-                "params_k_std": float(params_stats["std"]),
-                "flops_per_sample_mean": float(flops_stats["mean"]),
-                "flops_per_sample_std": float(flops_stats["std"]),
+                "per_fold": complexity_rows,
             },
             f,
             ensure_ascii=False,
             indent=2,
         )
 
+    config_public = dict(vars(cfg))
+    for key in [
+        "data_root",
+        "split_root",
+        "out_dir",
+        "teacher_repo_root",
+        "teacher_ckpt_root",
+        "teacher_model_file",
+        "teacher_cache_subject_dir",
+    ]:
+        if key in config_public:
+            config_public[key] = "<omitted>"
+
     summary = {
-        "mean_fold_top1": mean_top1,
-        "mean_fold_top2": mean_top2,
-        "mean_fold_top3": mean_top3,
-        "mean_fold_bin_acc": mean_bin_acc,
-        "mean_fold_bin_f1": mean_bin_f1,
-        "mean_fold_bin_auc": mean_bin_auc,
         "overall_top1": overall_top1,
         "overall_top2": overall_top2,
         "overall_top3": overall_top3,
         "overall_bin_acc": float(overall_bin["acc"]),
         "overall_bin_f1": float(overall_bin["pos_f1"]),
         "overall_bin_auc": float(overall_bin["pos_auc"]),
-        "stats_mean_std": {
-            "top1": top1_stats,
-            "top2": top2_stats,
-            "top3": top3_stats,
-            "bin_acc": acc_stats,
-            "bin_f1": f1_stats,
-            "bin_auc": auc_stats,
-            "params_k": params_stats,
-            "flops_per_sample": flops_stats,
-        },
         "model_complexity": {
-            "params_k_mean": float(params_stats["mean"]),
-            "params_k_std": float(params_stats["std"]),
-            "flops_per_sample_mean": float(flops_stats["mean"]),
-            "flops_per_sample_std": float(flops_stats["std"]),
+            "per_fold": complexity_rows,
         },
         "folds": fold_rows,
-        "config": vars(cfg),
+        "config": config_public,
     }
     with (out_dir / "summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
@@ -2803,30 +2773,7 @@ def main() -> None:
             str(r["best_agg_mode"]),
             str(r["select_on"]),
         )
-    logging.info(
-        "Mean-fold: top1=%.2f%% top2=%.2f%% top3=%.2f%% | Overall: top1=%.2f%% top2=%.2f%% top3=%.2f%%",
-        mean_top1 * 100.0,
-        mean_top2 * 100.0,
-        mean_top3 * 100.0,
-        overall_top1 * 100.0,
-        overall_top2 * 100.0,
-        overall_top3 * 100.0,
-    )
-    logging.info(
-        "mean+/-std: top1=%.1f+/-%.1f top2=%.1f+/-%.1f top3=%.1f+/-%.1f, ACC=%.1f+/-%.1f F1=%.1f+/-%.1f AUC=%.1f+/-%.1f",
-        float(top1_stats["mean"]) * 100.0,
-        float(top1_stats["std"]) * 100.0,
-        float(top2_stats["mean"]) * 100.0,
-        float(top2_stats["std"]) * 100.0,
-        float(top3_stats["mean"]) * 100.0,
-        float(top3_stats["std"]) * 100.0,
-        float(acc_stats["mean"]) * 100.0,
-        float(acc_stats["std"]) * 100.0,
-        float(f1_stats["mean"]) * 100.0,
-        float(f1_stats["std"]) * 100.0,
-        float(auc_stats["mean"]) * 100.0,
-        float(auc_stats["std"]) * 100.0,
-    )
+    logging.info("Overall subject-level: top1=%.2f%% top2=%.2f%% top3=%.2f%%", overall_top1 * 100.0, overall_top2 * 100.0, overall_top3 * 100.0)
     logging.info(
         "Question-level binary overall: n=%d ACC=%.2f%% F1=%.2f%% AUC=%.2f%%",
         int(overall_bin["n"]),
@@ -2834,13 +2781,7 @@ def main() -> None:
         float(overall_bin["pos_f1"]) * 100.0,
         float(overall_bin["pos_auc"]) * 100.0,
     )
-    logging.info(
-        "Model complexity mean+/-std: params=%.3f+/-%.3f K, flops/sample=%.0f+/-%.0f",
-        float(params_stats["mean"]),
-        float(params_stats["std"]),
-        float(flops_stats["mean"]),
-        float(flops_stats["std"]),
-    )
+    logging.info("Model complexity per-fold statistics saved to model_complexity.csv/json")
     logging.info("Saved: %s", out_dir)
 
 

@@ -677,6 +677,8 @@ def build_instances(
 
 def aggregate_subject_scores(rows: Sequence[Dict[str, Any]], agg_mode: str = "sum") -> Dict[str, Dict[str, Any]]:
     agg_mode = str(agg_mode).lower().strip()
+    if agg_mode != "sum":
+        raise ValueError(f"Only 'sum' aggregation is supported in this release, got: {agg_mode}")
     by_sid: Dict[str, Dict[str, Any]] = {}
     for r in rows:
         sid = str(r["sid"])
@@ -694,16 +696,7 @@ def aggregate_subject_scores(rows: Sequence[Dict[str, Any]], agg_mode: str = "su
         logits = np.zeros((10,), dtype=np.float32)
         for d in range(1, 11):
             vals = np.asarray(obj["pairs"].get(d, []), dtype=np.float32)
-            if vals.size == 0:
-                logits[d - 1] = -1e6 if agg_mode == "max" else 0.0
-            elif agg_mode == "sum":
-                logits[d - 1] = float(vals.sum())
-            elif agg_mode == "mean":
-                logits[d - 1] = float(vals.mean())
-            elif agg_mode == "max":
-                logits[d - 1] = float(vals.max())
-            else:
-                raise ValueError(f"Unknown agg_mode: {agg_mode}")
+            logits[d - 1] = float(vals.sum()) if vals.size > 0 else 0.0
         rank = (np.argsort(-logits) + 1).tolist()
         out[sid] = {
             "y_true": int(obj["y_digit"]),
@@ -1018,11 +1011,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--input_dim_cap", type=int, default=4096)
     p.add_argument("--feature_qid_shift", type=int, default=0, help="feature qid = qid + shift")
     p.add_argument("--min_valid_q", type=int, default=20)
-    p.add_argument("--agg_mode", type=str, default="sum", choices=["sum", "mean", "max"])
+    p.add_argument("--agg_mode", type=str, default="sum", choices=["sum"])
     p.add_argument("--use_big5", type=int, default=0, choices=[0, 1])
     p.add_argument("--big5_scale", type=float, default=0.2)
     p.add_argument("--big5_hidden", type=int, default=16)
     p.add_argument("--big5_fusion", type=str, default="interaction", choices=["interaction", "concat"])
+    p.add_argument("--anonymize_subject_id", type=int, default=1, choices=[0, 1])
     return p.parse_args()
 
 
@@ -1177,25 +1171,10 @@ def main() -> None:
     if len(fold_rows) == 0:
         raise RuntimeError("No fold completed")
 
-    mean_top1 = float(np.mean([float(r["top1"]) for r in fold_rows]))
-    mean_top2 = float(np.mean([float(r["top2"]) for r in fold_rows]))
-    mean_top3 = float(np.mean([float(r["top3"]) for r in fold_rows]))
-    mean_bin_acc = float(np.mean([float(r["bin_acc"]) for r in fold_rows]))
-    mean_pos_f1 = float(np.mean([float(r["pos_f1"]) for r in fold_rows]))
-    mean_pos_auc = float(np.mean([float(r["pos_auc"]) for r in fold_rows]))
     overall_top1 = float(total_h1) / max(1, int(total_n))
     overall_top2 = float(total_h2) / max(1, int(total_n))
     overall_top3 = float(total_h3) / max(1, int(total_n))
     overall_bin = binary_metrics_from_rows(qdetail_rows)
-    top1_stats = summarize_mean_std([float(r["top1"]) for r in fold_rows])
-    top2_stats = summarize_mean_std([float(r["top2"]) for r in fold_rows])
-    top3_stats = summarize_mean_std([float(r["top3"]) for r in fold_rows])
-    acc_stats = summarize_mean_std([float(r["bin_acc"]) for r in fold_rows])
-    f1_stats = summarize_mean_std([float(r["pos_f1"]) for r in fold_rows])
-    auc_stats = summarize_mean_std([float(r["pos_auc"]) for r in fold_rows])
-    param_stats = summarize_mean_std([float(r["param_k"]) for r in complexity_rows])
-    flops_q_stats = summarize_mean_std([float(r["flops_per_question"]) for r in complexity_rows])
-    flops_subj_stats = summarize_mean_std([float(r["flops_per_subject"]) for r in complexity_rows])
 
     with (out_dir / "fold_metrics.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(
@@ -1219,10 +1198,19 @@ def main() -> None:
         for r in fold_rows:
             w.writerow(r)
 
+    if bool(int(getattr(cfg, "anonymize_subject_id", 1))):
+        sid_set = sorted(set([str(r["subject_id"]) for r in detail_rows] + [str(r["subject_id"]) for r in qdetail_rows]))
+        sid_map = {sid: f"S{idx + 1:03d}" for idx, sid in enumerate(sid_set)}
+        detail_rows_public = [{**r, "subject_id": sid_map.get(str(r["subject_id"]), str(r["subject_id"]))} for r in detail_rows]
+        qdetail_rows_public = [{**r, "subject_id": sid_map.get(str(r["subject_id"]), str(r["subject_id"]))} for r in qdetail_rows]
+    else:
+        detail_rows_public = detail_rows
+        qdetail_rows_public = qdetail_rows
+
     with (out_dir / "detail_predictions.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["fold", "subject_id", "y_true", "y_hat", "top2_hit", "top3_hit", "top3"])
         w.writeheader()
-        for r in detail_rows:
+        for r in detail_rows_public:
             w.writerow(r)
 
     with (out_dir / "detail_question_binary.csv").open("w", newline="", encoding="utf-8") as f:
@@ -1231,7 +1219,7 @@ def main() -> None:
             fieldnames=["fold", "subject_id", "qid", "q_digit", "y_digit", "lie_true", "score_lie", "lie_pred"],
         )
         w.writeheader()
-        for r in qdetail_rows:
+        for r in qdetail_rows_public:
             w.writerow(r)
 
     with (out_dir / "model_complexity.csv").open("w", newline="", encoding="utf-8") as f:
@@ -1243,52 +1231,30 @@ def main() -> None:
     with (out_dir / "model_complexity.json").open("w", encoding="utf-8") as f:
         json.dump(
             {
-                "param_k_mean": float(param_stats["mean"]),
-                "param_k_std": float(param_stats["std"]),
-                "flops_per_question_mean": float(flops_q_stats["mean"]),
-                "flops_per_question_std": float(flops_q_stats["std"]),
-                "flops_per_subject_mean": float(flops_subj_stats["mean"]),
-                "flops_per_subject_std": float(flops_subj_stats["std"]),
+                "per_fold": complexity_rows,
             },
             f,
             ensure_ascii=False,
             indent=2,
         )
 
+    config_public = dict(vars(cfg))
+    for key in ["data_root", "split_root", "out_dir"]:
+        if key in config_public:
+            config_public[key] = "<omitted>"
+
     summary = {
-        "mean_fold_top1": mean_top1,
-        "mean_fold_top2": mean_top2,
-        "mean_fold_top3": mean_top3,
-        "mean_fold_bin_acc": mean_bin_acc,
-        "mean_fold_pos_f1": mean_pos_f1,
-        "mean_fold_pos_auc": mean_pos_auc,
         "overall_top1": overall_top1,
         "overall_top2": overall_top2,
         "overall_top3": overall_top3,
         "overall_bin_acc": float(overall_bin["acc"]),
         "overall_pos_f1": float(overall_bin["pos_f1"]),
         "overall_pos_auc": float(overall_bin["pos_auc"]),
-        "stats_mean_std": {
-            "top1": top1_stats,
-            "top2": top2_stats,
-            "top3": top3_stats,
-            "bin_acc": acc_stats,
-            "pos_f1": f1_stats,
-            "pos_auc": auc_stats,
-            "param_k": param_stats,
-            "flops_per_question": flops_q_stats,
-            "flops_per_subject": flops_subj_stats,
-        },
         "model_complexity": {
-            "param_k_mean": float(param_stats["mean"]),
-            "param_k_std": float(param_stats["std"]),
-            "flops_per_question_mean": float(flops_q_stats["mean"]),
-            "flops_per_question_std": float(flops_q_stats["std"]),
-            "flops_per_subject_mean": float(flops_subj_stats["mean"]),
-            "flops_per_subject_std": float(flops_subj_stats["std"]),
+            "per_fold": complexity_rows,
         },
         "folds": fold_rows,
-        "config": vars(cfg),
+        "config": config_public,
     }
     with (out_dir / "summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
@@ -1306,15 +1272,7 @@ def main() -> None:
             float(r["pos_f1"]) * 100.0,
             float(r["pos_auc"]) * 100.0,
         )
-    logging.info(
-        "Mean-fold: top1=%.2f%% top2=%.2f%% top3=%.2f%% | Overall: top1=%.2f%% top2=%.2f%% top3=%.2f%%",
-        mean_top1 * 100.0,
-        mean_top2 * 100.0,
-        mean_top3 * 100.0,
-        overall_top1 * 100.0,
-        overall_top2 * 100.0,
-        overall_top3 * 100.0,
-    )
+    logging.info("Overall subject-level: top1=%.2f%% top2=%.2f%% top3=%.2f%%", overall_top1 * 100.0, overall_top2 * 100.0, overall_top3 * 100.0)
     logging.info(
         "Question-level binary overall: n=%d ACC=%.2f%% F1=%.2f%% AUC=%.2f%%",
         int(overall_bin["n_q"]),
@@ -1322,30 +1280,7 @@ def main() -> None:
         float(overall_bin["pos_f1"]) * 100.0,
         float(overall_bin["pos_auc"]) * 100.0,
     )
-    logging.info(
-        "mean+/-std: top1=%.1f+/-%.1f top2=%.1f+/-%.1f top3=%.1f+/-%.1f, ACC=%.1f+/-%.1f F1=%.1f+/-%.1f AUC=%.1f+/-%.1f",
-        float(top1_stats["mean"]) * 100.0,
-        float(top1_stats["std"]) * 100.0,
-        float(top2_stats["mean"]) * 100.0,
-        float(top2_stats["std"]) * 100.0,
-        float(top3_stats["mean"]) * 100.0,
-        float(top3_stats["std"]) * 100.0,
-        float(acc_stats["mean"]) * 100.0,
-        float(acc_stats["std"]) * 100.0,
-        float(f1_stats["mean"]) * 100.0,
-        float(f1_stats["std"]) * 100.0,
-        float(auc_stats["mean"]) * 100.0,
-        float(auc_stats["std"]) * 100.0,
-    )
-    logging.info(
-        "Model complexity mean+/-std: params=%.3f+/-%.3f K, flops/q=%.0f+/-%.0f, flops/subject=%.0f+/-%.0f",
-        float(param_stats["mean"]),
-        float(param_stats["std"]),
-        float(flops_q_stats["mean"]),
-        float(flops_q_stats["std"]),
-        float(flops_subj_stats["mean"]),
-        float(flops_subj_stats["std"]),
-    )
+    logging.info("Model complexity per-fold statistics saved to model_complexity.csv/json")
     logging.info("Saved: %s", out_dir)
 
 
