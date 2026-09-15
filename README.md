@@ -14,7 +14,7 @@ This repository contains the official implementation of our MM'26 paper: **"GPD:
 
 ### Key Contributions
 
-- **MuDD Dataset**: A new **M**ultimodal **D**eception **D**etection dataset collected from 72 participants performing a number-guessing game, with synchronized video, audio, and physiological signals (GSR, PPG, SKT).
+- **MuDD Dataset**: A new **M**ultimodal **D**eception **D**etection dataset collected from 130 participants performing a number-guessing game, with synchronized video, audio, and physiological signals (GSR, PPG, HR, Pers.).
 - **GPD Framework**: A progressive cross-modal knowledge distillation method that transfers knowledge from contact-based physiological sensors to non-contact audio-visual modalities.
 - **State-of-the-art Performance**: Achieves superior deception detection using only video or audio, without requiring physiological sensors at inference time.
 
@@ -65,19 +65,19 @@ The **MuDD (Multimodal Deception Detection) Dataset** is available for academic 
 
 ### Dataset Overview
 
-- **72 participants** (36 male, 36 female)
-- **~45 minutes per session** with number-guessing game paradigm
+- **130 participants**
+- **~690 minutes per session** with number-guessing game paradigm
 - **Multimodal recordings**:
   - 📹 Video (facial expressions, head movements)
   - 🎵 Audio (speech, prosody)
-  - 🧠 Physiological signals: GSR, PPG, SKT (contact-based sensors)
-- **Ground-truth annotations** for deceptive vs. truthful responses
+  - 🧠 Physiological signals: GSR, PPG, HR, Pers. (contact-based sensors)
+- **Ground-truth annotations** for Bin.+T-10cls
 
 ### How to Access
 
 1. **Read the Data Use Agreement**: [MuDD_Data_Use_Agreement.pdf](docs/MuDD_Data_Use_Agreement.pdf)
 2. **Complete the Application Form**: Download and fill out the form in the agreement document
-3. **Submit your application**: Email the signed form to **liuyao@uestc.edu.cn**
+3. **Submit your application**: Email the signed form to **darcy981020@gmail.com**
 4. **Student applicants**: Must obtain supervisor/PI signature
 
 ### Terms of Use
@@ -179,19 +179,6 @@ python code/eval_video_genlie_5fold.py \
 
 ---
 
-## 🧮 Model Complexity
-
-Our method achieves competitive performance with significantly reduced model complexity:
-
-| Model | Modality | Params (M) | FLOPs (G) | Accuracy (%) |
-|-------|----------|------------|-----------|--------------|
-| Teacher | GSR+PPG+SKT | - | - | 85.2 |
-| Student | Video | 12.4 | 3.8 | 82.7 |
-| Student | Audio | 8.6 | 2.1 | 79.4 |
-
-*(Numbers are representative; see paper for full results)*
-
----
 
 ## 📝 Citation
 
@@ -223,18 +210,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 For questions about the code or dataset access:
 
+- **Peiyuan Jiang**: darcy981020@gmail.com
 - **Yao Liu** (Corresponding Author): liuyao@uestc.edu.cn
-- **Peiyuan Jiang**: [GitHub Issues](https://github.com/YOUR_USERNAME/GPD/issues)
 
 **Affiliation**: University of Electronic Science and Technology of China (UESTC)
 
 ---
 
-## 🙏 Acknowledgments
-
-We thank all participants who contributed to the MuDD dataset collection. This work was supported by [funding information if applicable].
-
----
 
 ## 📌 Repository Structure
 
