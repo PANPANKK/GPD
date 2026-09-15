@@ -27,7 +27,6 @@ This repository contains the official implementation of our MM'26 paper: **"GPD:
 - [Quick Start](#-quick-start)
 - [Training](#-training)
 - [Evaluation](#-evaluation)
-- [Model Complexity](#-model-complexity)
 - [Citation](#-citation)
 - [License](#-license)
 - [Contact](#-contact)
