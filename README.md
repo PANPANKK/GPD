@@ -14,7 +14,7 @@ This repository contains the official implementation of our MM'26 paper: **"GPD:
 
 ### Key Contributions
 
-- **MuDD Dataset**: A new **M**ultimodal **D**eception **D**etection dataset collected from 130 participants performing a number-guessing game, with synchronized video, audio, and physiological signals (GSR, PPG, HR, Pers.).
+- **MuDD Dataset**: A new **M**ultimodal **D**eception **D**etection dataset collected from 130 participants performing a number-guessing game, with synchronized video, audio, and physiological signals (GSR, PPG, HR).
 - **GPD Framework**: A progressive cross-modal knowledge distillation method that transfers knowledge from contact-based physiological sensors to non-contact audio-visual modalities.
 - **State-of-the-art Performance**: Achieves superior deception detection using only video or audio, without requiring physiological sensors at inference time.
 
@@ -70,7 +70,7 @@ The **MuDD (Multimodal Deception Detection) Dataset** is available for academic 
 - **Multimodal recordings**:
   - 📹 Video (facial expressions, head movements)
   - 🎵 Audio (speech, prosody)
-  - 🧠 Physiological signals: GSR, PPG, HR, Pers. (contact-based sensors)
+  - 🧠 Physiological signals: GSR, PPG, HR (contact-based sensors)
 - **Ground-truth annotations** for Bin.+T-10cls
 
 ### How to Access
@@ -148,7 +148,6 @@ python code/train_video_genlie_q2d_progressive_kd_5fold.py \
 - `--progressive_weight`: Weight for progressive distillation loss (default: 0.3)
 - `--distill_temperature`: Temperature for knowledge distillation (default: 4.0)
 - `--val_ratio`: Validation split ratio (default: 0.2)
-- `--select_on`: Model selection criterion, `val` or `test` (default: `val`)
 
 ### Advanced Configuration
 
