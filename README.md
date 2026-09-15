@@ -67,9 +67,9 @@ The **MuDD (Multimodal Deception Detection) Dataset** is available for academic 
 - **130 participants**
 - **~690 minutes per session** with number-guessing game paradigm
 - **Multimodal recordings**:
-  - 📹 Video (facial expressions, head movements)
-  - 🎵 Audio (speech, prosody)
-  - 🧠 Physiological signals: GSR, PPG, HR (contact-based sensors)
+  - 📹 Video 
+  - 🎵 Audio
+  - 🧠 Physiological signals: GSR, PPG, HR 
 - **Ground-truth annotations** for Bin.+T-10cls
 
 ### How to Access
