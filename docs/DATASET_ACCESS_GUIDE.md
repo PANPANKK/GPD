@@ -6,21 +6,25 @@ The **MuDD (Multimodal Deception Detection) Dataset** is a comprehensive multimo
 
 ### Dataset Statistics
 
-- **Participants**: 72 (36 male, 36 female)
-- **Session Duration**: ~45 minutes per participant
+- **Participants**: 130
+- **Total Recording Duration**: ~690 minutes across all participants
 - **Paradigm**: Number-guessing game with truth/deception instructions
 - **Data Modalities**:
-  - 📹 **Video**: Frontal facial recordings (1920×1080, 30 fps)
-  - 🎵 **Audio**: Speech recordings (48 kHz, 16-bit)
+  - 📹 **Video**: Facial and upper-body recordings (30 fps; resolution is not specified in the paper)
+  - 🎵 **Audio**: Speech recordings (48 kHz; bit depth is not specified in the paper)
   - 🧠 **Physiological Signals**:
     - GSR (Galvanic Skin Response)
     - PPG (Photoplethysmography)
-    - SKT (Skin Temperature)
-- **Annotations**: Ground-truth labels for deceptive vs. truthful responses
+    - HR (Heart Rate)
+    - Physiological sampling rate: 256 Hz
+  - Big-Five personality scores as subject-level annotations
+- **Annotations**: Binary truth/deception labels and 10-class hidden-number targets
+
+The rates above follow paper Section 3; resolution and bit depth should be confirmed with the dataset administrator.
 
 ### Data Structure
 
-After approval, you will receive access to:
+The following is an illustrative raw-data layout, not the input format accepted by the released training scripts. Confirm the delivered layout with the dataset administrator. See [README required inputs](../README.md#required-inputs-and-external-teacher) for pre-extracted features, CSV labels, and `fold_i/{train_ids,test_ids}.txt` split files:
 
 ```
 MuDD/
@@ -38,7 +42,7 @@ MuDD/
 │   ├── participant_001/
 │   │   ├── gsr.csv
 │   │   ├── ppg.csv
-│   │   └── skt.csv
+│   │   └── hr.csv
 │   └── ...
 ├── annotations/
 │   ├── labels.csv
@@ -98,7 +102,7 @@ The application form is included in the Data Use Agreement document. You need to
 
 ### Step 4: Wait for Approval
 
-- Applications are typically reviewed within **1-2 weeks**
+- Contact the dataset administrator for the current review timeframe
 - You will receive an email with:
   - Download instructions
   - Access credentials (if applicable)
@@ -131,7 +135,6 @@ Any publication using MuDD **must cite**:
   title={GPD: Physiological Signal-Guided Progressive Cross-Modal Distillation for Non-Contact Deception Detection},
   author={Jiang, Peiyuan and Liu, Yao and Gan, Yanglei and Yang, Jiaye and Ahmad, Khwaja Mutahir and Liao, Zhenlong and Liu, Lu and Peng, Xuefeng and Xue, Yuewei and Yao, Daibing and Liu, Qiao},
   booktitle={Proceedings of the 34th ACM International Conference on Multimedia},
-  pages={},
   year={2026},
   organization={ACM},
   doi={10.1145/3767308.3835225}
@@ -150,7 +153,7 @@ For questions about dataset access or technical issues:
 - **Email**: liuyao@uestc.edu.cn
 
 For code-related questions:
-- Open an issue on [GitHub](https://github.com/YOUR_USERNAME/GPD/issues)
+- Open an issue on [GitHub](https://github.com/PANPANKK/GPD/issues)
 
 ---
 
@@ -188,7 +191,7 @@ For code-related questions:
 
 ## Updates and Announcements
 
-Check the [GitHub repository](https://github.com/YOUR_USERNAME/GPD) for:
+Check the [GitHub repository](https://github.com/PANPANKK/GPD) for:
 - Dataset updates or corrections
 - New baseline results
 - Code improvements
