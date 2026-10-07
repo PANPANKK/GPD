@@ -78,7 +78,7 @@ The **MuDD (Multimodal Deception Detection) Dataset** is available for academic 
 
 1. **Read the Data Use Agreement**: [MuDD_Data_Use_Agreement.docx](docs/MuDD_Data_Use_Agreement.docx)
 2. **Complete the Application Form**: Download and fill out the form in the agreement document
-3. **Submit your application**: Email the signed form to **liuyao@uestc.edu.cn**, the dataset contact listed in the agreement
+3. **Submit your application**: Email the signed form to **darcy981020@gmail.com** (dataset access applications)
 4. **Student applicants**: Must obtain supervisor/PI signature
 
 ### Terms of Use
