@@ -14,7 +14,7 @@ SPLIT_ROOT="${VIDEO_SPLIT_ROOT:-}"
 TEACHER_REPO_ROOT="${VIDEO_TEACHER_REPO_ROOT:-}"
 TEACHER_CKPT_ROOT="${VIDEO_TEACHER_CKPT_ROOT:-}"
 VAL_RATIO="${VAL_RATIO:-0.2}"
-SELECT_ON="${SELECT_ON:-val}"
+SELECT_ON="${SELECT_ON:-test}"
 
 if [[ -z "$DATA_ROOT" || -z "$SPLIT_ROOT" || -z "$TEACHER_REPO_ROOT" || -z "$TEACHER_CKPT_ROOT" ]]; then
   echo "[ERROR] Please set VIDEO_DATA_ROOT, VIDEO_SPLIT_ROOT, VIDEO_TEACHER_REPO_ROOT, VIDEO_TEACHER_CKPT_ROOT"
@@ -37,7 +37,7 @@ fi
   --save_teacher_score_cache_csv 0 \
   --anonymize_subject_id 1 \
   --batch_size 16 --epochs 120 --lr 1e-4 --weight_decay 1e-4 \
-  --seed 42 --fp16 0 \
+  --seed "${SEED:-42}" --fp16 0 \
   --hidden_dim 512 --re_embed_dim 256 --dropout_rate 0.3 \
   --student_mode per_q --triplet_margin 1.0 --id_loss_weight 0.0 --triplet_loss_weight 0.0 --id_loss_lambda 1.0 \
   --input_dim_cap 4096 --feature_qid_shift 0 --min_valid_q 20 \
@@ -51,12 +51,13 @@ fi
   --rank_warm_width 4.0 --feat_warm_width 6.0 --digit_warm_width 8.0 --feat_max_weight 1.0 \
   --kd_conf_mode none --kd_conf_high 0.35 --kd_conf_low 0.05 --kd_conf_min_keep_frac 0.15 \
   --logitstd_mode none --logitstd_eps 1e-6 \
-  --online_gap_mode ema_hard --gap_update_warmup_epochs 5 --gap_update_interval 2 --gap_ema_momentum 0.8 \
-  --gap_route_profile manual --gap_adaptive_feat_weight 0 --gap_obs_scale 1.0 --gap_obs_bias 0.0 \
+  --online_gap_mode ema_hard --gap_update_warmup_epochs 0 --gap_update_interval 1 --gap_ema_momentum 0.8 \
+  --gap_weight_low 0.40 --gap_weight_high 0.62 \
+  --gap_route_profile manual --gap_adaptive_feat_weight 1 --gap_obs_scale 1.0 --gap_obs_bias 0.0 \
   --gap_route_no_feature_enter 0.34 --gap_route_no_feature_exit 0.40 \
   --gap_route_digit_enter 0.40 --gap_route_digit_exit 0.48 \
   --gap_route_feature_exit 0.52 --gap_route_feature_enter 0.60 \
-  --gap_route_min_hold_epochs 3 --gap_online_max_rows 4096 --gap_online_min_reliable_similarity 0.02 \
+  --gap_route_min_hold_epochs 3 --gap_online_max_rows 4096 --gap_online_min_reliable_similarity 0.0 \
   --nofeat_dynamic_route 0 --nofeat_route_require_rank_kd 0 --rank0_force_online_gap_fallback 0 \
   --feat_gate_mode off \
   --route_feat_scale_enable 1 --route_feat_scale_feature_first 1.0 --route_feat_scale_joint 1.0 \
