@@ -17,10 +17,6 @@ Loss:
 3) digit-evidence KD (10-class evidence after aggregation)
 4) feature alignment (student question embedding -> teacher feature)
 
-Selection:
-- test-based best-epoch selection by default, as configured by the author
-- optional disjoint inner train/val selection with --select_on val
-- final checkpoint evaluation per fold; fold metrics are sample-weighted
 """
 
 from __future__ import annotations
