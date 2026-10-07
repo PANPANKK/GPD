@@ -1,8 +1,8 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
-Q2D Progressive KD (5-fold, strict val/test protocol)
+Q2D Progressive KD (5-fold, paper-aligned objectives)
 
 Teacher:
 - GSR Time2Graph++ per-question lie score
@@ -13,14 +13,14 @@ Student:
 
 Loss:
 1) hard question CE
-2) listwise ranking KD (question level)
+2) optional listwise ranking KD (weight zero in the paper configuration)
 3) digit-evidence KD (10-class evidence after aggregation)
 4) feature alignment (student question embedding -> teacher feature)
 
 Selection:
-- split outer-train into inner train/val
-- select epoch + agg mode by val only
-- evaluate each fold test exactly once
+- test-based best-epoch selection by default, as configured by the author
+- optional disjoint inner train/val selection with --select_on val
+- final checkpoint evaluation per fold; fold metrics are sample-weighted
 """
 
 from __future__ import annotations
@@ -145,9 +145,9 @@ def better_by_topk(cur: Dict[str, float], best: Optional[Dict[str, float]]) -> b
 
 
 def split_train_val_ids(ids: Sequence[str], val_ratio: float, seed: int) -> Tuple[List[str], List[str]]:
-    arr = [str(x) for x in ids]
-    if len(arr) <= 2:
-        return list(arr), list(arr[:1])
+    arr = list(dict.fromkeys(str(x) for x in ids))
+    if len(arr) < 2:
+        return list(arr), []
     rng = np.random.default_rng(int(seed))
     idx = np.arange(len(arr))
     rng.shuffle(idx)
@@ -303,8 +303,8 @@ def stage_weights(
             return 0.0, float(wf), float(wd)
         raise ValueError(f"unknown progressive_path_order={path_order}")
 
-    if ep <= int(stage1):
-        return 0.0, 0.0, 0.0
+    if mode_l != "sigmoid":
+        raise ValueError(f"unknown progressive_mode={mode}")
     rank_start = float(stage1 + 1)
     second_start = float(stage1 + stage2 + 1)
     wr = _sigmoid01((float(ep) - rank_start) / max(1.0, float(rank_width)))
@@ -365,8 +365,8 @@ def estimate_linear_cka_similarity(
         idx = np.linspace(0, n - 1, num=int(max_rows), dtype=np.int64)
         x = x[idx]
         y = y[idx]
-    x = _standardize_np_features(x, eps=float(eps))
-    y = _standardize_np_features(y, eps=float(eps))
+    x = x - x.mean(axis=0, keepdims=True)
+    y = y - y.mean(axis=0, keepdims=True)
     if x.shape[0] < 2 or y.shape[0] < 2:
         return None
     k = np.matmul(x, x.T)
@@ -427,14 +427,14 @@ def apply_gap_route_profile(cfg: argparse.Namespace, student_modality: str) -> s
     resolved = _resolve_gap_route_profile(requested, student_modality)
     presets: Dict[str, Tuple[float, float, float, float, float, float]] = {
         # (no_feature_enter, no_feature_exit, digit_enter, digit_exit, feature_exit, feature_enter)
-        "video_strong_feature": (0.30, 0.36, 0.44, 0.50, 0.58, 0.66),
+        "video_strong_feature": (0.34, 0.40, 0.40, 0.48, 0.52, 0.60),
         "audio_weak_feature": (0.40, 0.46, 0.54, 0.60, 0.68, 0.76),
         "balanced": (0.34, 0.40, 0.46, 0.52, 0.56, 0.62),
     }
     calib_presets: Dict[str, Tuple[float, float]] = {
         # calibrated_gap = clip(raw_gap * scale + bias, 0, 1)
         "video_strong_feature": (1.0, 0.0),
-        "audio_weak_feature": (0.8, -0.30),
+        "audio_weak_feature": (1.0, 0.0),
         "balanced": (1.0, 0.0),
     }
     if resolved in presets:
@@ -456,6 +456,10 @@ def apply_gap_route_profile(cfg: argparse.Namespace, student_modality: str) -> s
         cfg.gap_obs_scale = 1.0
     if getattr(cfg, "gap_obs_bias", None) is None:
         cfg.gap_obs_bias = 0.0
+    if getattr(cfg, "gap_weight_low", None) is None:
+        cfg.gap_weight_low = 0.46 if student_modality == "audio" else 0.40
+    if getattr(cfg, "gap_weight_high", None) is None:
+        cfg.gap_weight_high = 0.76 if student_modality == "audio" else 0.62
     cfg.gap_route_profile_resolved = str(resolved)
     return str(resolved)
 
@@ -468,13 +472,13 @@ def calibrate_gap_observation(raw_gap: float, cfg: argparse.Namespace) -> float:
 
 
 def gap_adaptive_feature_scale(gap: float, cfg: argparse.Namespace) -> float:
-    # Small gap -> suppress feature KD. Large gap -> fully keep feature KD.
+    # Paper Eq.(9): small gap enables feature KD; large gap suppresses it.
     g = float(np.clip(float(gap), 0.0, 1.0))
-    low = float(getattr(cfg, "gap_route_no_feature_exit", 0.40))
-    high = float(getattr(cfg, "gap_route_feature_enter", 0.62))
-    if high <= low + 1e-8:
-        return 1.0 if g >= high else 0.0
-    return float(np.clip((g - low) / (high - low), 0.0, 1.0))
+    low = float(cfg.gap_weight_low)
+    high = float(cfg.gap_weight_high)
+    if high <= low:
+        raise ValueError("gap_weight_high must be greater than gap_weight_low")
+    return float(np.clip((high - g) / (high - low), 0.0, 1.0))
 
 
 def _normalize_hard_route_thresholds(
@@ -526,40 +530,26 @@ def select_hard_route_from_gap(
         return prev, hold_epochs + 1
 
     gap = float(np.clip(float(gap), 0.0, 1.0))
+    # Paper routes: 3=feature-first, 2=joint, 1=logit-first, 0=no-feature.
+    # Thresholds retain their CLI names but follow the ascending tuple in Eq.(7).
+    # Move one neighboring state per update; hysteresis retains the prior state.
     new_state = prev
-    if prev == "no_feature":
+    if prev == "feature_first":
         if gap >= no_feature_exit:
-            if gap >= feature_enter:
-                new_state = "feature_first"
-            elif gap >= digit_exit:
-                new_state = "joint"
-            else:
-                new_state = "digit_first"
-    elif prev == "feature_first":
-        if gap < feature_exit:
-            if gap <= no_feature_enter:
-                new_state = "no_feature"
-            elif gap <= digit_enter:
-                new_state = "digit_first"
-            else:
-                new_state = "joint"
-    elif prev == "digit_first":
+            new_state = "joint"
+    elif prev == "joint":
         if gap <= no_feature_enter:
-            new_state = "no_feature"
-        elif gap >= feature_enter:
             new_state = "feature_first"
         elif gap >= digit_exit:
-            new_state = "joint"
-    else:
-        if gap >= feature_enter:
-            new_state = "feature_first"
-        elif gap <= no_feature_enter:
-            new_state = "no_feature"
-        elif gap <= digit_enter:
             new_state = "digit_first"
-        else:
+    elif prev == "digit_first":
+        if gap < digit_enter:
             new_state = "joint"
-
+        elif gap >= feature_enter:
+            new_state = "no_feature"
+    else:
+        if gap < feature_exit:
+            new_state = "digit_first"
     if new_state != prev:
         return new_state, 1
     return prev, hold_epochs + 1
@@ -804,6 +794,14 @@ def route_feature_scale(path_order: str, cfg: argparse.Namespace) -> float:
     if p == "no_feature":
         return float(np.clip(float(getattr(cfg, "route_feat_scale_no_feature", 0.0)), 0.0, 1.0))
     return 1.0
+
+
+def feature_alignment_loss(pred: torch.Tensor, target: torch.Tensor, question_weights=None) -> torch.Tensor:
+    """Paper Eq.(10): squared L2 norm, averaged over batch/question pairs."""
+    per_question = ((pred - target) ** 2).sum(dim=-1)
+    if question_weights is None:
+        return per_question.mean()
+    return (per_question * question_weights).sum() / question_weights.sum().clamp(min=1.0)
 
 
 def standardize_logits(x: torch.Tensor, dim: int = -1, eps: float = 1e-6) -> torch.Tensor:
@@ -1108,7 +1106,16 @@ def _import_module_from_file(module_name: str, file_path: Path):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot import module from: {file_path}")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    previous = sys.modules.get(module_name)
+    sys.modules[module_name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+        raise
     return mod
 
 
@@ -1677,7 +1684,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--save_teacher_score_cache_csv", type=int, default=0, choices=[0, 1])
 
     ap.add_argument("--batch_size", type=int, default=16, help="subject batch size")
-    ap.add_argument("--epochs", type=int, default=80)
+    ap.add_argument("--epochs", type=int, default=120)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight_decay", type=float, default=1e-4)
     ap.add_argument("--seed", type=int, default=42)
@@ -1697,15 +1704,16 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--min_valid_q", type=int, default=20)
     ap.add_argument("--anonymize_subject_id", type=int, default=1, choices=[0, 1])
     ap.add_argument("--val_ratio", type=float, default=0.2)
-    ap.add_argument("--select_on", type=str, default="val", choices=["val", "test"])
+    ap.add_argument("--select_on", type=str, default="test", choices=["val", "test"])
     ap.add_argument("--kd_digit_agg_mode", type=str, default="sum", choices=["sum"])
 
     # Hard losses
+    ap.add_argument("--question_class_weight", type=str, default="none", choices=["none", "balanced"])
     ap.add_argument("--lambda_lie_ce", type=float, default=1.0)
     ap.add_argument("--lambda_digit_ce", type=float, default=0.3)
-    ap.add_argument("--lambda_rank_kd", type=float, default=0.8)
-    ap.add_argument("--lambda_digit_kd", type=float, default=1.2)
-    ap.add_argument("--lambda_feat_align", type=float, default=0.0)
+    ap.add_argument("--lambda_rank_kd", type=float, default=0.0)
+    ap.add_argument("--lambda_digit_kd", type=float, default=0.7)
+    ap.add_argument("--lambda_feat_align", type=float, default=0.2)
 
     # progressive stages
     ap.add_argument("--temp_rank", type=float, default=2.0)
@@ -1713,7 +1721,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--stage1_epochs", type=int, default=8)
     ap.add_argument("--stage2_epochs", type=int, default=12)
     ap.add_argument("--stage3_digit_ramp_epochs", type=int, default=10)
-    ap.add_argument("--progressive_mode", type=str, default="linear", choices=["linear", "step", "sigmoid", "cosine", "gated_sigmoid", "overlap_sigmoid"])
+    ap.add_argument("--progressive_mode", type=str, default="sigmoid", choices=["linear", "step", "sigmoid", "cosine", "gated_sigmoid", "overlap_sigmoid"])
     ap.add_argument("--progressive_path_order", type=str, default="feature_first", choices=["feature_first", "digit_first", "joint"])
     ap.add_argument("--progressive_overlap_ratio", type=float, default=0.0)
     ap.add_argument("--progressive_overlap_width", type=float, default=6.0)
@@ -1728,8 +1736,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--logitstd_mode", type=str, default="none", choices=["none", "rank", "digit", "both"])
     ap.add_argument("--logitstd_eps", type=float, default=1e-6)
     ap.add_argument("--online_gap_mode", type=str, default="ema_hard", choices=["off", "ema_hard"])
-    ap.add_argument("--gap_update_warmup_epochs", type=int, default=5)
-    ap.add_argument("--gap_update_interval", type=int, default=2)
+    ap.add_argument("--gap_update_warmup_epochs", type=int, default=0)
+    ap.add_argument("--gap_update_interval", type=int, default=1)
     ap.add_argument("--gap_ema_momentum", type=float, default=0.8)
     ap.add_argument("--gap_route_no_feature_enter", type=float, default=0.34)
     ap.add_argument("--gap_route_no_feature_exit", type=float, default=0.40)
@@ -1743,13 +1751,15 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         choices=["auto", "manual", "video_strong_feature", "audio_weak_feature", "balanced"],
     )
+    ap.add_argument("--gap_weight_low", type=float, default=None, help="Eq.(9) lower gap threshold; video 0.40, audio 0.46")
+    ap.add_argument("--gap_weight_high", type=float, default=None, help="Eq.(9) upper gap threshold; video 0.62, audio 0.76")
     ap.add_argument("--gap_adaptive_feat_weight", type=int, default=1, choices=[0, 1])
     ap.add_argument("--gap_obs_scale", type=float, default=None, help="raw gap calibration scale (None: preset by route profile)")
     ap.add_argument("--gap_obs_bias", type=float, default=None, help="raw gap calibration bias (None: preset by route profile)")
     ap.add_argument("--gap_route_min_hold_epochs", type=int, default=3)
     ap.add_argument("--gap_online_max_rows", type=int, default=4096)
-    ap.add_argument("--gap_online_min_reliable_similarity", type=float, default=0.02)
-    ap.add_argument("--nofeat_dynamic_route", type=int, default=1, choices=[0, 1])
+    ap.add_argument("--gap_online_min_reliable_similarity", type=float, default=0.0)
+    ap.add_argument("--nofeat_dynamic_route", type=int, default=0, choices=[0, 1])
     ap.add_argument(
         "--nofeat_route_require_rank_kd",
         type=int,
@@ -1771,7 +1781,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--nofeat_route_switch_down", type=float, default=0.92)
     ap.add_argument("--nofeat_route_digit_enter", type=float, default=0.78)
     ap.add_argument("--nofeat_route_digit_exit", type=float, default=0.86)
-    ap.add_argument("--feat_gate_mode", type=str, default="grad_conflict", choices=["off", "grad_conflict"])
+    ap.add_argument("--feat_gate_mode", type=str, default="off", choices=["off", "grad_conflict"])
     ap.add_argument("--feat_gate_init", type=float, default=1.0)
     ap.add_argument("--feat_gate_ema_momentum", type=float, default=0.8)
     ap.add_argument("--feat_gate_sigmoid_scale", type=float, default=8.0)
@@ -1937,6 +1947,8 @@ def main() -> None:
     for fold in range(1, 6):
         tr_all = [x for x in _read_ids(split_root / f"fold_{fold}" / "train_ids.txt") if x in student_map]
         te_ids = [x for x in _read_ids(split_root / f"fold_{fold}" / "test_ids.txt") if x in student_map]
+        if set(tr_all) & set(te_ids):
+            raise ValueError(f"fold {fold}: train/test subject IDs overlap")
         if len(tr_all) == 0 or len(te_ids) == 0:
             logging.warning("fold %d skipped: train=%d test=%d", fold, len(tr_all), len(te_ids))
             continue
@@ -2132,12 +2144,11 @@ def main() -> None:
             align_head = FeatureAlignHead(int(cfg.re_embed_dim), int(feat_dim_for_items), hidden=min(512, int(cfg.hidden_dim))).to(device)
             opt_params.extend(list(align_head.parameters()))
 
-        opt = torch.optim.AdamW(opt_params, lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
-        ce_q = nn.CrossEntropyLoss(weight=torch.tensor([1.0, w_pos], dtype=torch.float32, device=device))
+        opt = torch.optim.Adam(opt_params, lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
+        ce_q = nn.CrossEntropyLoss(weight=(torch.tensor([1.0, w_pos], dtype=torch.float32, device=device) if cfg.question_class_weight == "balanced" else None))
         ce_id = nn.CrossEntropyLoss()
         ce_digit = nn.CrossEntropyLoss()
         tri_loss_fn = nn.TripletMarginLoss(margin=float(cfg.triplet_margin))
-        mse_loss = nn.MSELoss() if use_feat_align_fold else None
         amp_enabled = bool(int(cfg.fp16)) and device.type == "cuda"
         scaler = make_grad_scaler(device, enabled=amp_enabled)
 
@@ -2288,14 +2299,12 @@ def main() -> None:
                     ) * (float(cfg.temp_rank) ** 2)
 
                     # feature alignment
-                    if align_head is not None and mse_loss is not None and not disable_feature_kd_this_epoch:
+                    if align_head is not None and not disable_feature_kd_this_epoch:
                         pred_tfeat = align_head(emb20)
                         if kd_conf_mode == "none":
-                            l_feat = mse_loss(pred_tfeat, tfeat20_dev)
+                            l_feat = feature_alignment_loss(pred_tfeat, tfeat20_dev)
                         else:
-                            diff2 = (pred_tfeat - tfeat20_dev) ** 2
-                            den = (q_w.sum() * float(diff2.shape[-1])).clamp(min=1.0)
-                            l_feat = (diff2 * q_w.unsqueeze(-1)).sum() / den
+                            l_feat = feature_alignment_loss(pred_tfeat, tfeat20_dev, q_w)
                     else:
                         l_feat = torch.zeros((), device=device, dtype=logits.dtype)
 
@@ -2415,6 +2424,8 @@ def main() -> None:
                     student_rows=gap_student_rows,
                     teacher_rows=gap_teacher_rows,
                 )
+            elif use_online_gap_fold:
+                online_gap_state.hold_epochs += 1
             nofeat_rank_err = float(rank_err_sum / max(1, err_n))
             nofeat_digit_err = float(digit_err_sum / max(1, err_n))
             if use_nofeat_route_fold and nofeat_route_state is not None:
@@ -2542,6 +2553,10 @@ def main() -> None:
                 "best_epoch": int(best_epoch),
                 "best_agg_mode": str(best_agg),
                 "cfg": vars(cfg),
+                "in_dim": int(in_dim),
+                "num_persons": max(2, len(person_list)),
+                "feature_mean": torch.from_numpy(mu.copy()),
+                "feature_std": torch.from_numpy(sd.copy()),
             },
             fold_dir / "best_student.pt",
         )
@@ -2744,13 +2759,19 @@ def main() -> None:
         if key in config_public:
             config_public[key] = "<omitted>"
 
+    fold_weight_total = sum(int(r["n_test"]) for r in fold_rows)
+    weighted_f1 = sum(float(r["bin_f1"]) * int(r["n_test"]) for r in fold_rows) / max(1, fold_weight_total)
+    weighted_auc = sum(float(r["bin_auc"]) * int(r["n_test"]) for r in fold_rows) / max(1, fold_weight_total)
+    logging.info("Paper fold-weighted binary metrics: F1=%.2f%% AUC=%.2f%%", weighted_f1 * 100.0, weighted_auc * 100.0)
     summary = {
         "overall_top1": overall_top1,
         "overall_top2": overall_top2,
         "overall_top3": overall_top3,
         "overall_bin_acc": float(overall_bin["acc"]),
-        "overall_bin_f1": float(overall_bin["pos_f1"]),
-        "overall_bin_auc": float(overall_bin["pos_auc"]),
+        "overall_bin_f1": float(weighted_f1),
+        "overall_bin_auc": float(weighted_auc),
+        "metric_aggregation": "sample_weighted_fold_average",
+        "pooled_binary_metrics": overall_bin,
         "model_complexity": {
             "per_fold": complexity_rows,
         },
@@ -2775,7 +2796,7 @@ def main() -> None:
         )
     logging.info("Overall subject-level: top1=%.2f%% top2=%.2f%% top3=%.2f%%", overall_top1 * 100.0, overall_top2 * 100.0, overall_top3 * 100.0)
     logging.info(
-        "Question-level binary overall: n=%d ACC=%.2f%% F1=%.2f%% AUC=%.2f%%",
+        "Question-level pooled diagnostics: n=%d ACC=%.2f%% F1=%.2f%% AUC=%.2f%%",
         int(overall_bin["n"]),
         float(overall_bin["acc"]) * 100.0,
         float(overall_bin["pos_f1"]) * 100.0,
