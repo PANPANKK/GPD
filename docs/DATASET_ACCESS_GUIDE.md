@@ -92,7 +92,7 @@ The application form is included in the Data Use Agreement document. You need to
 
 ### Step 3: Submit Your Application
 
-**Email to**: liuyao@uestc.edu.cn
+**Email to**: darcy981020@gmail.com
 
 **Subject**: MuDD Dataset Access Request - [Your Name]
 
@@ -147,10 +147,10 @@ Any publication using MuDD **must cite**:
 
 For questions about dataset access or technical issues:
 
-**Dataset Administrator & Corresponding Author**:
-- **Name**: Yao Liu
+**Dataset Access Contact**:
+- **Name**: Peiyuan Jiang
 - **Affiliation**: University of Electronic Science and Technology of China
-- **Email**: liuyao@uestc.edu.cn
+- **Email**: darcy981020@gmail.com
 
 For code-related questions:
 - Open an issue on [GitHub](https://github.com/PANPANKK/GPD/issues)
@@ -161,7 +161,7 @@ For code-related questions:
 
 ### Q1: Can I use MuDD for my company's research project?
 
-**A**: MuDD is available only for non-commercial academic research. Commercial use requires separate authorization. Contact liuyao@uestc.edu.cn for inquiries.
+**A**: MuDD is available only for non-commercial academic research. Commercial use requires separate authorization. Contact darcy981020@gmail.com for dataset inquiries.
 
 ### Q2: Can I share the dataset with my collaborators?
 
