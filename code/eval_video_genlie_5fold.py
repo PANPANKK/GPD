@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
@@ -25,6 +25,7 @@ import logging
 import random
 import re
 from collections import Counter, defaultdict
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -158,6 +159,32 @@ def seed_everything(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def make_grad_scaler(device: torch.device, enabled: bool):
+    enabled = bool(enabled) and str(device.type) == "cuda"
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        try:
+            return torch.amp.GradScaler(device.type, enabled=enabled)
+        except TypeError:
+            return torch.amp.GradScaler(enabled=enabled)
+    if hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "GradScaler"):
+        return torch.cuda.amp.GradScaler(enabled=enabled)
+    return None
+
+
+def autocast_context(device: torch.device, enabled: bool):
+    enabled = bool(enabled) and str(device.type) == "cuda"
+    if not enabled:
+        return nullcontext()
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        try:
+            return torch.amp.autocast(device_type=device.type, enabled=enabled)
+        except TypeError:
+            return torch.amp.autocast(enabled=enabled)
+    if hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "autocast"):
+        return torch.cuda.amp.autocast(enabled=enabled)
+    return nullcontext()
 
 
 def get_device(device: str) -> torch.device:
@@ -889,11 +916,11 @@ def run_fold(
         big5_fusion=str(cfg.big5_fusion),
     ).to(device)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
+    opt = torch.optim.Adam(model.parameters(), lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
     cls_loss = nn.CrossEntropyLoss()
     id_loss_fn = nn.CrossEntropyLoss()
     tri_loss_fn = nn.TripletMarginLoss(margin=float(cfg.triplet_margin))
-    scaler = torch.amp.GradScaler(device.type, enabled=bool(int(cfg.fp16)) and device.type == "cuda")
+    scaler = make_grad_scaler(device, enabled=bool(int(cfg.fp16)))
 
     best = None
     best_state = None
@@ -909,7 +936,7 @@ def run_fold(
             p5 = p5.to(device)
             lbls = lbls.to(device)
             pid_idx = torch.tensor([pid2idx.get(str(s), 0) for s in sids], dtype=torch.long, device=device)
-            with torch.amp.autocast(device_type=device.type, enabled=bool(int(cfg.fp16)) and device.type == "cuda"):
+            with autocast_context(device, enabled=bool(int(cfg.fp16))):
                 logits, id_logits, emb = model(feats, p5=p5, lam=float(cfg.id_loss_lambda), return_feat=True)
                 lc = cls_loss(logits, lbls)
                 lid = id_loss_fn(id_logits, pid_idx)
@@ -971,7 +998,7 @@ def run_fold(
         if better:
             best = cur
             best_rows = test_rows
-            best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
     if best is None or best_state is None:
         raise RuntimeError(f"fold {fold}: no valid result")
@@ -993,8 +1020,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--feature_modality", type=str, default="video")
 
-    p.add_argument("--batch_size", type=int, default=64)
-    p.add_argument("--epochs", type=int, default=80)
+    p.add_argument("--batch_size", type=int, default=16)
+    p.add_argument("--epochs", type=int, default=120)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--seed", type=int, default=42)
@@ -1084,6 +1111,8 @@ def main() -> None:
     for fold in range(1, 6):
         tr_ids = [x for x in _read_ids(split_root / f"fold_{fold}" / "train_ids.txt") if x in sample_map]
         te_ids = [x for x in _read_ids(split_root / f"fold_{fold}" / "test_ids.txt") if x in sample_map]
+        if set(tr_ids) & set(te_ids):
+            raise ValueError(f"fold {fold}: train/test subject IDs overlap")
         if len(tr_ids) == 0 or len(te_ids) == 0:
             logging.warning("fold %d skipped: train=%d test=%d", fold, len(tr_ids), len(te_ids))
             continue
@@ -1243,13 +1272,19 @@ def main() -> None:
         if key in config_public:
             config_public[key] = "<omitted>"
 
+    fold_weight_total = sum(int(r["n_test"]) for r in fold_rows)
+    weighted_f1 = sum(float(r["pos_f1"]) * int(r["n_test"]) for r in fold_rows) / max(1, fold_weight_total)
+    weighted_auc = sum(float(r["pos_auc"]) * int(r["n_test"]) for r in fold_rows) / max(1, fold_weight_total)
+    logging.info("Paper fold-weighted binary metrics: F1=%.2f%% AUC=%.2f%%", weighted_f1 * 100.0, weighted_auc * 100.0)
     summary = {
         "overall_top1": overall_top1,
         "overall_top2": overall_top2,
         "overall_top3": overall_top3,
         "overall_bin_acc": float(overall_bin["acc"]),
-        "overall_pos_f1": float(overall_bin["pos_f1"]),
-        "overall_pos_auc": float(overall_bin["pos_auc"]),
+        "overall_pos_f1": float(weighted_f1),
+        "overall_pos_auc": float(weighted_auc),
+        "metric_aggregation": "sample_weighted_fold_average",
+        "pooled_binary_metrics": overall_bin,
         "model_complexity": {
             "per_fold": complexity_rows,
         },
@@ -1274,7 +1309,7 @@ def main() -> None:
         )
     logging.info("Overall subject-level: top1=%.2f%% top2=%.2f%% top3=%.2f%%", overall_top1 * 100.0, overall_top2 * 100.0, overall_top3 * 100.0)
     logging.info(
-        "Question-level binary overall: n=%d ACC=%.2f%% F1=%.2f%% AUC=%.2f%%",
+        "Question-level pooled diagnostics: n=%d ACC=%.2f%% F1=%.2f%% AUC=%.2f%%",
         int(overall_bin["n_q"]),
         float(overall_bin["acc"]) * 100.0,
         float(overall_bin["pos_f1"]) * 100.0,
